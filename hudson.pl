@@ -24,13 +24,15 @@ OPTIONS:
   -2|--sample2 [STR] : sample 2 ID [second in VCF]
   -b|--blocks [FILE] : blocks info file (output using `whatshap stats`)
   -o|--out     [STR] : prefix for outfiles ['collated']
+  -v|--verbose       : say more stuff
+  -d|--debug         : say even more stuff
   -h|--help          : prints this help message
 \n";
 
-my ($vcf_file, $sample1_id, $sample2_id, $blocks_file, $help, $debug);
+my ($vcf_file, $sample1_id, $sample2_id, $blocks_file, $help, $verbose, $debug);
 my $sample1_idx = 9;
 my $sample2_idx = 10;
-my $out_prefix = "hudson";
+my $out_prefix = "recomb";
 
 GetOptions (
   'i|vcf=s'     => \$vcf_file,
@@ -38,6 +40,7 @@ GetOptions (
   '2|sample2:s' => \$sample2_id,
   'b|blocks:s'  => \$blocks_file,
   'o|out:s'     => \$out_prefix,
+  'v|verbose'   => \$verbose,
   'd|debug'     => \$debug,
   'h|help'      => \$help
 );
@@ -52,10 +55,8 @@ if ($vcf_file =~ m/.gz$/) {
   open ($VCF, $vcf_file) or die $!;
 }
 
-my %seq_lengths;
-my %block_lengths;
-my %genotypes;
-# my %blocks;
+my (%genotypes, %seq_lengths, %supporting_sites);
+my ($sum_of_blocks, $sum_of_recomb_tracts, $recombination_events) = (0,0,0,0);
 
 while (my $line = <$VCF>) {
   chomp $line;
@@ -68,10 +69,13 @@ while (my $line = <$VCF>) {
     if ( ($sample1_id) && ($sample2_id) ) {
       $sample1_idx = first { $F[$_] eq $sample1_id } 0..$#F;
       $sample2_idx = first { $F[$_] eq $sample2_id } 0..$#F;
-      print STDERR "Sample ID '$sample1_id' has index $sample1_idx in VCF\n" if $debug;
-      print STDERR "Sample ID '$sample2_id' has index $sample2_idx in VCF\n" if $debug;
+      print STDERR "[INFO] Sample ID '$sample1_id' has index $sample1_idx in VCF\n";
+      print STDERR "[INFO] Sample ID '$sample2_id' has index $sample2_idx in VCF\n";
     } else {
-      print STDERR "Samples are $F[$sample1_idx] and $F[$sample2_idx]\n" if $debug;
+      print STDERR "[INFO] No sample IDs provided!\n";
+      $sample1_id = $F[$sample1_idx];
+      $sample2_id = $F[$sample2_idx];
+      print STDERR "[INFO] Defaulting to 1st and 2nd samples in VCF: '$sample1_id', '$sample2_id'\n";
     }
   } elsif (scalar(@F)>=8) {
     ## only process SNVs with REF and ALT == 1 bp
@@ -113,96 +117,242 @@ while (my $line = <$VCF>) {
     next;
   }
 }
-print STDERR "\n";
+print STDERR "\n[INFO] Done\n\n";
 
-print Dumper(\%genotypes) if $debug;
+## add sample names to output filenames
+$out_prefix .= ".$sample1_id.$sample2_id";
 
 ## open outfile
-open (my $OUT, ">".$out_prefix."_results.txt") or die $!;
-print $OUT "#CHROM\tBLOCK\tSNV1_POS\tSNV2_POS\tGT:$sample1_id.1\tGT:$sample1_id.2\tGT:$sample2_id.1\tGT:$sample2_id.2\tNUM\tRECOMB\n";
+open (my $OUT, ">".$out_prefix.".results.txt") or die $!;
+print $OUT "#CHROM:BLOCK\tSNV1_POS\tSNV2_POS\tGT:$sample1_id.1\tGT:$sample1_id.2\tGT:$sample2_id.1\tGT:$sample2_id.2\tHAP:$sample1_id.1\tHAP:$sample1_id.2\tHAP:$sample2_id.1\tHAP:$sample2_id.2\tNUM_HAPS\tRECOMB\n";
 ## open fasta blocks file
-open (my $FASTA, ">".$out_prefix."_blocks.fasta") or die $!;
+open (my $FASTA, ">".$out_prefix.".blocks.fasta") or die $!;
 ## open haplotypes info file
-open (my $HAP, ">".$out_prefix."_hap.txt") or die $!;
-# print $HAP "#LOCATION\tGT:$sample1_id\tGT:$sample2_id\tEVENT\n";
+open (my $HAP, ">".$out_prefix.".hap.txt") or die $!;
+## open tracts info file
+open (my $TRACTS, ">".$out_prefix.".tracts.txt") or die $!;
+print $TRACTS "#CHROM:BLOCK\tNUM_RECOMBS\tRECOMB_POS\tWINDOW_START\tWINDOW_END\tSUPPORT\tTRACT_LENGTH\n";
 
 foreach my $chrom (nsort keys %genotypes) {
   my %blocks = %{$genotypes{$chrom}};
+
   foreach my $block (sort {$a<=>$b} keys %blocks) {
     print $HAP "##block_id=$block\n";
     my %positions = %{$blocks{$block}};
-    my (@prev_gt1, @prev_gt2, $prev_position);
-    my (@hap1, @hap2, @hap3, @hap4);
+    my (@ALL_positions, @RECOMB_indices, $prev_position);
+    my (@prev_gt1, @prev_gt2, @prev_nuc1, @prev_nuc2);
+    my (@hap1_nuc_array, @hap2_nuc_array, @hap3_nuc_array, @hap4_nuc_array);
+    my (@hap1_geno_array, @hap2_geno_array, @hap3_geno_array, @hap4_geno_array);
+    my $i = 0;
+
     foreach my $curr_position (sort {$a<=>$b} keys %positions) {
-      print $HAP "$chrom:$curr_position\t$positions{$curr_position}{GT1}\t$positions{$curr_position}{GT2}";
+      print $HAP "$chrom:$block:$curr_position\t$positions{$curr_position}{GT1}\t$positions{$curr_position}{GT2}";
       my @curr_gt1 = split (/\|/, $positions{$curr_position}{GT1});
       my @curr_gt2 = split (/\|/, $positions{$curr_position}{GT2});
-      $curr_gt1[0] == 0 ? push (@hap1, $positions{$curr_position}{REF}) : push (@hap1, $positions{$curr_position}{ALT});
-      $curr_gt1[1] == 0 ? push (@hap2, $positions{$curr_position}{REF}) : push (@hap2, $positions{$curr_position}{ALT});
-      $curr_gt2[0] == 0 ? push (@hap3, $positions{$curr_position}{REF}) : push (@hap3, $positions{$curr_position}{ALT});
-      $curr_gt2[1] == 0 ? push (@hap4, $positions{$curr_position}{REF}) : push (@hap4, $positions{$curr_position}{ALT});
+      ## construct haplotype nucleotide arrays
+      my (@curr_nuc1, @curr_nuc2);
+      $curr_gt1[0] == 0 ? push (@curr_nuc1, $positions{$curr_position}{REF}) : push (@curr_nuc1, $positions{$curr_position}{ALT});
+      $curr_gt1[1] == 0 ? push (@curr_nuc1, $positions{$curr_position}{REF}) : push (@curr_nuc1, $positions{$curr_position}{ALT});
+      $curr_gt2[0] == 0 ? push (@curr_nuc2, $positions{$curr_position}{REF}) : push (@curr_nuc2, $positions{$curr_position}{ALT});
+      $curr_gt2[1] == 0 ? push (@curr_nuc2, $positions{$curr_position}{REF}) : push (@curr_nuc2, $positions{$curr_position}{ALT});
 
       ## evaluation block:
       if ( (@prev_gt1) && (@prev_gt2) && ($prev_position) ) {
-        ## make haplotypes
-        my $hap1 = join ("", $prev_gt1[0], $curr_gt1[0]);
-        my $hap2 = join ("", $prev_gt1[1], $curr_gt1[1]);
-        my $hap3 = join ("", $prev_gt2[0], $curr_gt2[0]);
-        my $hap4 = join ("", $prev_gt2[1], $curr_gt2[1]);
+        ## make haplotypes of pairs of adjacent SNPs
+        my $hap1_gt = join ("", $prev_gt1[0], $curr_gt1[0]);
+        my $hap2_gt = join ("", $prev_gt1[1], $curr_gt1[1]);
+        my $hap3_gt = join ("", $prev_gt2[0], $curr_gt2[0]);
+        my $hap4_gt = join ("", $prev_gt2[1], $curr_gt2[1]);
+        ## and as nucs
+        my $hap1_nuc = join ("", $prev_nuc1[0], $curr_nuc1[0]);
+        my $hap2_nuc = join ("", $prev_nuc1[1], $curr_nuc1[1]);
+        my $hap3_nuc = join ("", $prev_nuc2[0], $curr_nuc2[0]);
+        my $hap4_nuc = join ("", $prev_nuc2[1], $curr_nuc2[1]);
 
         ## count unique haplotypes
         my %haplotypes;
-        $haplotypes{$hap1}++;
-        $haplotypes{$hap2}++;
-        $haplotypes{$hap3}++;
-        $haplotypes{$hap4}++;
+        $haplotypes{$hap1_gt}++;
+        $haplotypes{$hap2_gt}++;
+        $haplotypes{$hap3_gt}++;
+        $haplotypes{$hap4_gt}++;
 
         ## print to file
-        print $OUT join ("\t", $chrom, $block, $prev_position, $curr_position, $hap1, $hap2, $hap3, $hap4, ($hap1 =~ tr/01//), scalar(keys %haplotypes));
-        # scalar(keys %haplotypes) > 2 ? print $OUT "\tYES\n" : print $OUT "\tNO\n";
-        if (scalar(keys %haplotypes) > 2) {
+        print $OUT join ("\t", "$chrom:$block", $prev_position, $curr_position, $hap1_gt, $hap2_gt, $hap3_gt, $hap4_gt, $hap1_nuc, $hap2_nuc, $hap3_nuc, $hap4_nuc, scalar(keys %haplotypes));
+
+        ## test if the number of unique haplotypes is 2 or 4
+        if ( scalar(keys %haplotypes) == 4 ) {
+          ## recombination!
           print $OUT "\tYES\n";
           print $HAP "\t*\n";
-        } else {
+          $recombination_events++;
+          push (@RECOMB_indices, $i); ## array of recombination event indices
+        } elsif ( scalar(keys %haplotypes) == 2 ) {
           print $OUT "\tNO\n";
           print $HAP "\t.\n";
+        } else {
+          print STDERR "[INFO] SNVs at positions $chrom:$block:$prev_position,$chrom:$block:$curr_position found to have intermediate number of haplotypes\n";
         }
 
-        ## record end position of block
-        $block_lengths{"$chrom:$block"}{END} = $curr_position;
-
       } else {
-        ## record start position of block
-        $block_lengths{"$chrom:$block"}{START} = $curr_position;
         print $HAP "\t.\n";
       }
-      @prev_gt1 = split (/\|/, $positions{$curr_position}{GT1});
-      @prev_gt2 = split (/\|/, $positions{$curr_position}{GT2});
+
+      ## construct haplotype genotype arrays
+      push (@hap1_geno_array, $curr_gt1[0]);
+      push (@hap2_geno_array, $curr_gt1[1]);
+      push (@hap3_geno_array, $curr_gt2[0]);
+      push (@hap4_geno_array, $curr_gt2[1]);
+      ## construct haplotype nucleotide arrays
+      $curr_gt1[0] == 0 ? push (@hap1_nuc_array, $positions{$curr_position}{REF}) : push (@hap1_nuc_array, $positions{$curr_position}{ALT});
+      $curr_gt1[1] == 0 ? push (@hap2_nuc_array, $positions{$curr_position}{REF}) : push (@hap2_nuc_array, $positions{$curr_position}{ALT});
+      $curr_gt2[0] == 0 ? push (@hap3_nuc_array, $positions{$curr_position}{REF}) : push (@hap3_nuc_array, $positions{$curr_position}{ALT});
+      $curr_gt2[1] == 0 ? push (@hap4_nuc_array, $positions{$curr_position}{REF}) : push (@hap4_nuc_array, $positions{$curr_position}{ALT});
+
+      ## store GTs for next iteration
+      @prev_gt1 = @curr_gt1;
+      @prev_gt2 = @curr_gt2;
+      @prev_nuc1 = @curr_nuc1;
+      @prev_nuc2 = @curr_nuc2;
       $prev_position = $curr_position;
+
+      ## record positions
+      push (@ALL_positions, $curr_position);
+      $i++;
     }
+
+    ## test if genotypes downstream of inferred recombination support the switch
+    ## LOGIC:$hap1_geno_up should match either $hap3_geno_up or $hap4_geno_up;
+    ## then, if the switch is supported by downstream sites, $hap1_geno_down
+    ## should match the alternative hap to whichever $hap1_geno_up matched to
+    my @events = (0,@RECOMB_indices,$#hap1_geno_array+1); ## @events is an array with the indices: block start, any recombination events, block end (+1 needed to prevent index out of bounds for end of block)
+    for my $i (1..$#events-1) {
+      print $TRACTS join ("\t", "$chrom:$block", scalar(@RECOMB_indices), $ALL_positions[$events[$i]], $ALL_positions[$events[$i-1]], $ALL_positions[$events[$i+1]-1]) . "\t";
+      print STDERR "$chrom:$block\tTaking window around event at index \#$events[$i] (zero-based), genomic positions ".($ALL_positions[$events[$i-1]])."<-[".($ALL_positions[$events[$i]])."]->".($ALL_positions[$events[$i+1]-1]).")\n" if $verbose;
+      ## split haps into upstream and downstream segments
+      my $hap1_geno_up = join ('', @hap1_geno_array[$events[$i-1]..$events[$i]-1]); ## upstream = slice genotype array from previous event, to index prior to current event
+      my $hap1_geno_down = join ('', @hap1_geno_array[$events[$i]..$events[$i+1]-1]); ## downstream = slice genotype array from current event, to index prior to next event
+      my $hap2_geno_up = join ('', @hap2_geno_array[$events[$i-1]..$events[$i]-1]);
+      my $hap2_geno_down = join ('', @hap2_geno_array[$events[$i]..$events[$i+1]-1]);
+      my $hap3_geno_up = join ('', @hap3_geno_array[$events[$i-1]..$events[$i]-1]);
+      my $hap3_geno_down = join ('', @hap3_geno_array[$events[$i]..$events[$i+1]-1]);
+      my $hap4_geno_up = join ('', @hap4_geno_array[$events[$i-1]..$events[$i]-1]);
+      my $hap4_geno_down = join ('', @hap4_geno_array[$events[$i]..$events[$i+1]-1]);
+
+      print STDERR "$chrom:$block\tUPSTREAM genomic coordinates: $ALL_positions[$events[$i-1]]<->$ALL_positions[$events[$i]-1]\n" if $verbose;
+      print STDERR "$chrom:$block\tDOWNSTREAM genomic coordinates: $ALL_positions[$events[$i]]<->$ALL_positions[$events[$i+1]-1]\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample1_id hap1 upstream: $hap1_geno_up\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample1_id hap1 downstream: $hap1_geno_down\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample1_id hap2 upstream: $hap2_geno_up\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample1_id hap2 downstream: $hap2_geno_down\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample2_id hap3 upstream: $hap3_geno_up\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample2_id hap3 downstream: $hap3_geno_down\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample2_id hap4 upstream: $hap4_geno_up\n" if $verbose;
+      print STDERR "$chrom:$block\t$sample2_id hap4 downstream: $hap4_geno_down\n" if $verbose;
+
+      if ( $hap1_geno_up eq $hap3_geno_up ) {
+        print STDERR "$chrom:$block\t$sample1_id hap1 upstream ($hap1_geno_up) matches $sample2_id hap3 upstream ($hap3_geno_up)\n" if $verbose;
+        if ( $hap1_geno_down eq $hap4_geno_down ) {
+          print STDERR "$chrom:$block\t$sample1_id hap1 downstream ($hap1_geno_down) matches $sample2_id hap4 downstream ($hap4_geno_down)\n" if $verbose;
+          print STDERR "$chrom:$block\tNumber of supporting downstream SNVs = ".length($hap1_geno_down)."\n" if $verbose;
+          $supporting_sites{length($hap1_geno_down)}++;
+          # $singleton_sites++ if (length($hap1_geno_down)==1);
+          my @slice = @ALL_positions[$events[$i]..$events[$i+1]-1];
+          # print STDERR "$chrom:$block\t@slice\n" if $verbose;
+          print STDERR "$chrom:$block\tLength of downstream tract = ".($slice[$#slice]-$slice[0])." bp\n" if $verbose;
+          $sum_of_recomb_tracts += ($slice[$#slice]-$slice[0]);
+          print $TRACTS join ("\t", length($hap1_geno_down), ($slice[$#slice]-$slice[0])) . "\n";
+        } else {
+          print STDERR "$chrom:$block\t$sample1_id hap1 downstream ($hap1_geno_down) does not match $sample2_id hap4 downstream ($hap4_geno_down)\n" if $verbose;
+          print STDERR "$chrom:$block\tSwitch is NOT supported at downstream sites\n" if $verbose;
+          print $TRACTS join ("\t", "0", "-") . "\n";
+        }
+      } elsif ( $hap1_geno_up eq $hap4_geno_up ) {
+        print STDERR "$chrom:$block\t$sample1_id hap1 upstream ($hap1_geno_up) matches $sample2_id hap4 upstream ($hap4_geno_up)\n" if $verbose;
+        if ( $hap1_geno_down eq $hap3_geno_down ) {
+          print STDERR "$chrom:$block\t$sample1_id hap1 downstream ($hap1_geno_down) matches $sample2_id hap3 downstream ($hap3_geno_down)\n" if $verbose;
+          print STDERR "$chrom:$block\tNumber of supporting downstream SNVs = ".length($hap1_geno_down)."\n" if $verbose;
+          $supporting_sites{length($hap1_geno_down)}++;
+          # $singleton_sites++ if (length($hap1_geno_down)==1);
+          my @slice = @ALL_positions[$events[$i]..$events[$i+1]-1];
+          # print STDERR "$chrom:$block\t@slice\n" if $verbose;
+          print STDERR "$chrom:$block\tLength of tract = ".($slice[$#slice]-$slice[0])." bp\n" if $verbose;
+          $sum_of_recomb_tracts += ($slice[$#slice]-$slice[0]);
+          print $TRACTS join ("\t", length($hap1_geno_down), ($slice[$#slice]-$slice[0])) . "\n";
+        } else {
+          print STDERR "$chrom:$block\t$sample1_id hap1 downstream ($hap1_geno_down) does not match $sample2_id hap3 downstream ($hap3_geno_down)\n" if $verbose;
+          print STDERR "$chrom:$block\tSwitch is NOT supported at downstream sites\n" if $verbose;
+          print $TRACTS join ("\t", "0", "-") . "\n";
+        }
+      }
+    }
+
+    ## record sum of block lengths
+    $sum_of_blocks += ($ALL_positions[-1] - $ALL_positions[0]);
+
     ## print haplotype blocks as fasta
     print $FASTA ">$sample1_id:$chrom:$block:1\n";
-    print $FASTA join ("", @hap1) . "\n";
+    print $FASTA join ("", @hap1_nuc_array) . "\n";
     print $FASTA ">$sample1_id:$chrom:$block:2\n";
-    print $FASTA join ("", @hap2) . "\n";
+    print $FASTA join ("", @hap2_nuc_array) . "\n";
     print $FASTA ">$sample2_id:$chrom:$block:1\n";
-    print $FASTA join ("", @hap3) . "\n";
+    print $FASTA join ("", @hap3_nuc_array) . "\n";
     print $FASTA ">$sample2_id:$chrom:$block:2\n";
-    print $FASTA join ("", @hap4) . "\n";
+    print $FASTA join ("", @hap4_nuc_array) . "\n";
     print $FASTA "\n";
   }
 }
 close $OUT;
 close $FASTA;
 close $HAP;
+close $TRACTS;
 
-foreach (nsort keys %block_lengths) {
-  print "$_ start = $block_lengths{$_}{START}\n";
-  print "$_ end = $block_lengths{$_}{END}\n";
-  my $len = $block_lengths{$_}{END} - $block_lengths{$_}{START};
-  print "$_ length = $len\n";
+## print histogram of supporting SNVs
+open (my $HIST, ">".$out_prefix.".hist.txt") or die $!;
+my ($singleton_sites, $more_than_singleton_sites);
+foreach (sort {$a<=>$b} keys %supporting_sites) {
+  print $HIST "$_\t$supporting_sites{$_}\n";
+  if ($_ == 1) {
+    $singleton_sites = $supporting_sites{$_};
+  } else {
+    $more_than_singleton_sites += $supporting_sites{$_};
+  }
+}
+close $HIST;
+
+print STDERR "[INFO] Number of inferred recombination events = ".commify($recombination_events)."\n";
+print STDERR "[INFO] Number of inferred recombination events with support from >1 downstream SNV = ".commify($more_than_singleton_sites)." (".commify(percentage($more_than_singleton_sites, $recombination_events))."\%)\n";
+print STDERR "[INFO] Number of inferred recombination events with support from only one other SNV ('singleton' events) = ".commify($singleton_sites)." (".commify(percentage($singleton_sites, $recombination_events))."\%)\n";
+print STDERR "[INFO] Total block length = ".commify($sum_of_blocks)." bp\n";
+print STDERR "[INFO] Sum of recombinant tracts = ".commify($sum_of_recomb_tracts)." bp (".commify(percentage($sum_of_recomb_tracts, $sum_of_blocks))."\%)\n";
+print STDERR "[INFO] Finished ".`date`;
+
+## print to summary file
+open (my $SUMMARY, ">".$out_prefix.".summary.txt") or die $!;
+print $SUMMARY "Input VCF = $vcf_file\n";
+print $SUMMARY "Sample IDs = $sample1_id, $sample2_id\n";
+print $SUMMARY "Number of inferred recombination events = ".commify($recombination_events)."\n";
+print $SUMMARY "Number of inferred recombination events with support from >1 downstream SNV = ".commify($more_than_singleton_sites)." (".commify(percentage($more_than_singleton_sites, $recombination_events))."\%)\n";
+print $SUMMARY "Number of inferred recombination events with support from only one other SNV ('singleton' events) = ".commify($singleton_sites)." (".commify(percentage($singleton_sites, $recombination_events))."\%)\n";
+print $SUMMARY "Total block length = ".commify($sum_of_blocks)." bp\n";
+print $SUMMARY "Sum of recombinant tracts = ".commify($sum_of_recomb_tracts)." bp (".commify(percentage($sum_of_recomb_tracts, $sum_of_blocks))."\%)\n";
+close $SUMMARY;
+
+######### SUBS
+
+sub commify {
+    my $text = reverse $_[0];
+    $text =~ s/(\d\d\d)(?=\d)(?!\d*\.)/$1,/g;
+    return scalar reverse $text;
 }
 
-print STDERR "[INFO] Finished " . `date`;
+sub percentage {
+    my $numerator = $_[0];
+    my $denominator = $_[1];
+    my $places = "\%.1f"; ## default is one decimal places
+    if (exists $_[2]){$places = "\%.".$_[2]."f";};
+    my $float = (($numerator / $denominator)*100);
+    my $rounded = sprintf("$places",$float);
+    return $rounded;
+}
 
 __END__
