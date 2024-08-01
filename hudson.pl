@@ -22,14 +22,13 @@ OPTIONS:
   -i|--vcf    [FILE] : VCF file with phased genotypes [required]
   -1|--sample1 [STR] : sample 1 ID [first in VCF]
   -2|--sample2 [STR] : sample 2 ID [second in VCF]
-  -b|--blocks [FILE] : blocks info file (output using `whatshap stats`)
-  -o|--out     [STR] : prefix for outfiles ['collated']
+  -o|--out     [STR] : prefix for outfiles ['recomb']
   -v|--verbose       : say more stuff
   -d|--debug         : say even more stuff
   -h|--help          : prints this help message
 \n";
 
-my ($vcf_file, $sample1_id, $sample2_id, $blocks_file, $help, $verbose, $debug);
+my ($vcf_file, $sample1_id, $sample2_id, $help, $verbose, $debug);
 my $sample1_idx = 9;
 my $sample2_idx = 10;
 my $out_prefix = "recomb";
@@ -38,7 +37,6 @@ GetOptions (
   'i|vcf=s'     => \$vcf_file,
   '1|sample1:s' => \$sample1_id,
   '2|sample2:s' => \$sample2_id,
-  'b|blocks:s'  => \$blocks_file,
   'o|out:s'     => \$out_prefix,
   'v|verbose'   => \$verbose,
   'd|debug'     => \$debug,
@@ -49,11 +47,8 @@ die $usage if $help;
 die $usage unless ($vcf_file);
 
 my $VCF;
-if ($vcf_file =~ m/.gz$/) {
-  open ($VCF, "gunzip -c $vcf_file |") or die $!;
-} else {
-  open ($VCF, $vcf_file) or die $!;
-}
+## open with bcftools, should handle most file types
+open ($VCF, "bcftools view |") or die $!;
 
 my (%genotypes, %blocks, %seq_lengths, %supporting_sites);
 my ($sum_of_blocks, $sum_of_recomb_tracts, $recombination_events) = (0,0,0,0);
