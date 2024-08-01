@@ -12,8 +12,7 @@ use Data::Dumper;
 
 my $usage = "
 SYNOPSIS:
-  Detect recombination breakpoints from phased blocks using Hudson's
-  4-gamete test.
+  Detect recombination breakpoints from phased blocks using Hudson's 4-gamete test.
 
 USAGE:
   hudson.pl -i <VCF> [-1 SAMPLE1 -2 SAMPLE2] [-o <OUT>]
