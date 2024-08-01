@@ -47,7 +47,7 @@ die $usage unless ($vcf_file);
 
 my $VCF;
 ## open with bcftools, should handle most file types
-open ($VCF, "bcftools view |") or die $!;
+open ($VCF, "bcftools view $vcf_file |") or die $!;
 
 my (%genotypes, %blocks, %seq_lengths, %supporting_sites);
 my ($sum_of_blocks, $sum_of_recomb_tracts, $recombination_events) = (0,0,0,0);
