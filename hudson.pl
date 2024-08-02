@@ -22,13 +22,14 @@ OPTIONS:
   -1|--sample1 [STR] : sample 1 ID [first in VCF]
   -2|--sample2 [STR] : sample 2 ID [second in VCF]
   -o|--out     [STR] : prefix for outfiles ['recomb']
+	-q|--quiet         : don't print progress
   -v|--verbose       : say more stuff
   -d|--debug         : say even more stuff
   -h|--help          : prints this help message
 \n";
 
-my ($vcf_file, $sample1_id, $sample2_id, $help, $verbose, $debug);
-my $sample1_idx = 9;
+my ($vcf_file, $sample1_id, $sample2_id, $help, $quiet, $verbose, $debug);
+my $sample1_idx = 9; ## default first and second samples in file
 my $sample2_idx = 10;
 my $out_prefix = "recomb";
 
@@ -37,6 +38,7 @@ GetOptions (
   '1|sample1:s' => \$sample1_id,
   '2|sample2:s' => \$sample2_id,
   'o|out:s'     => \$out_prefix,
+	'q|quiet'     => \$quiet,
   'v|verbose'   => \$verbose,
   'd|debug'     => \$debug,
   'h|help'      => \$help
@@ -75,7 +77,10 @@ while (my $line = <$VCF>) {
   } elsif (scalar(@F)>=8) {
     ## only process SNVs with REF and ALT == 1 bp
     if ( (length($F[3])==1) && (length($F[4])==1) ) {
-      print STDERR "\r[INFO] Processing SNV at position $F[0]:$F[1] $F[3]/$F[4]    "; $| = 1;
+			
+			unless ( $quiet ) {
+				print STDERR "\r[INFO] Processing SNV at position $F[0]:$F[1] $F[3]/$F[4]    "; $| = 1;
+			}
 
       my @ff1 = split (":", $F[$sample1_idx]);
       my @ff2 = split (":", $F[$sample2_idx]);
