@@ -47,7 +47,7 @@ GetOptions (
 die $usage if $help;
 die $usage unless ($vcf_file);
 
-if (system ("bcftools --version") != 0) {
+if (system ("bcftools --version &> /dev/null") != 0) {
 	die "\n[ERROR] Problem with bcftools!\n$!\n";
 }
 
