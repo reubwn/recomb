@@ -125,7 +125,7 @@ $out_prefix .= ".$sample1_id.$sample2_id";
 
 ## open outfile
 open (my $OUT, ">".$out_prefix.".hudson_results.txt") or die $!;
-print $OUT "#CHROM:BLOCK\tSNP1_POS\tSNP2_POS\tDISTANCE\tGT:$sample1_id.1\tGT:$sample1_id.2\tGT:$sample2_id.1\tGT:$sample2_id.2\tHAP:$sample1_id.1\tHAP:$sample1_id.2\tHAP:$sample2_id.1\tHAP:$sample2_id.2\tNUM_HAPS\tRECOMB\n";
+print $OUT "#CHROM:BLOCK\tSAMPLES\tSNP1_POS\tSNP2_POS\tDISTANCE\tGT:$sample1_id.1\tGT:$sample1_id.2\tGT:$sample2_id.1\tGT:$sample2_id.2\tHAP:$sample1_id.1\tHAP:$sample1_id.2\tHAP:$sample2_id.1\tHAP:$sample2_id.2\tNUM_HAPS\tRECOMB\n";
 ## open per-block outfile
 open (my $BLOCKS, ">".$out_prefix.".block_results.txt") or die $!;
 print $BLOCKS "#CHROM:BLOCK\tCOORDS\tSAMPLE1\tSAMPLE2\tLENGTH_SNPS\tLENGTH_BP\tNUM_RECOMBS\tMEAN_AFFECTED_SNPS\tMEAN_AFFECTED_BP\n";
@@ -184,13 +184,13 @@ foreach my $chrom (nsort keys %genotypes) {
         $haplotypes{$hap4_gt}++;
 
         ## print to file
-        print $OUT join ("\t", "$chrom:$block", $prev_position, $curr_position, ($curr_position-$prev_position), $hap1_gt, $hap2_gt, $hap3_gt, $hap4_gt, $hap1_nuc, $hap2_nuc, $hap3_nuc, $hap4_nuc, scalar(keys %haplotypes));
+        print $OUT join ("\t", "$chrom:$block", "$sample1_id,$sample2_id", $prev_position, $curr_position, ($curr_position-$prev_position), $hap1_gt, $hap2_gt, $hap3_gt, $hap4_gt, $hap1_nuc, $hap2_nuc, $hap3_nuc, $hap4_nuc, scalar(keys %haplotypes));
 
         ## test if the number of unique haplotypes is 2 or 4
         if ( scalar(keys %haplotypes) == 4 ) {
           ## recombination!
-          print $OUT "\t*\n";
-          print $HAP "\t*\n";
+          print $OUT "\tR\n";
+          print $HAP "\tR\n";
           $recombination_events++;
           push (@RECOMB_indices, $i); ## array of recombination event indices
         } elsif ( scalar(keys %haplotypes) == 2 ) {
