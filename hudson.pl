@@ -47,6 +47,10 @@ GetOptions (
 die $usage if $help;
 die $usage unless ($vcf_file);
 
+if (system "bcftools --version" != 0) {
+	die "\nProblem with bcftools!\n$!\n";
+}
+
 my $VCF;
 ## open with bcftools, should handle most file types
 open ($VCF, "bcftools view $vcf_file |") or die $!;
