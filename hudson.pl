@@ -48,7 +48,7 @@ die $usage if $help;
 die $usage unless ($vcf_file);
 
 if (system ("bcftools --version") != 0) {
-	die "\nProblem with bcftools!\n$!\n";
+	die "\n[ERROR] Problem with bcftools!\n$!\n";
 }
 
 my $VCF;
